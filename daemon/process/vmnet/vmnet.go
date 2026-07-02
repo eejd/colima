@@ -151,15 +151,28 @@ func forceDeleteFileIfExists(name string) error {
 	return nil
 }
 
+// EnvVmnetSocket is a fork override (see macports-ports-local#168): when
+// set and non-empty, relocates the vmnet unix socket to an arbitrary path
+// instead of the default `${daemon}/vmnet.sock` under the profile's
+// (possibly TCC-restricted, e.g. external/removable volume) config dir.
+// The pidfile path is unaffected. Unset behaviour is identical to upstream.
+// Upstream PR tracking: abiosoft/colima (TBD, precedent: PR #1537).
+const EnvVmnetSocket = "COLIMA_VMNET_SOCKET"
+
 func Info() struct {
 	PidFile string
 	Socket  osutil.Socket
 } {
+	socketPath := filepath.Join(process.Dir(), "vmnet.sock")
+	if override := os.Getenv(EnvVmnetSocket); override != "" {
+		socketPath = override
+	}
+
 	return struct {
 		PidFile string
 		Socket  osutil.Socket
 	}{
 		PidFile: filepath.Join(runDir(), "vmnet-"+config.CurrentProfile().ShortName+".pid"),
-		Socket:  osutil.Socket(filepath.Join(process.Dir(), "vmnet.sock")),
+		Socket:  osutil.Socket(socketPath),
 	}
 }
