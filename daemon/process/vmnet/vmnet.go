@@ -86,7 +86,7 @@ func (v *vmnetProcess) Start(ctx context.Context) error {
 		if v.mode == "bridged" {
 			command = cli.CommandInteractive("sudo", BinaryPath,
 				"--vmnet-mode", "bridged",
-				"--socket-group", "staff",
+				"--socket-group", "hive",
 				"--vmnet-interface", v.netInterface,
 				"--pidfile", pid,
 				socket,
@@ -94,7 +94,7 @@ func (v *vmnetProcess) Start(ctx context.Context) error {
 		} else {
 			command = cli.CommandInteractive("sudo", BinaryPath,
 				"--vmnet-mode", "shared",
-				"--socket-group", "staff",
+				"--socket-group", "hive",
 				"--vmnet-gateway", NetGateway,
 				"--vmnet-dhcp-end", NetDHCPEnd,
 				"--pidfile", pid,
