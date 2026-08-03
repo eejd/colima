@@ -6,9 +6,29 @@ import (
 	"testing"
 )
 
-// A genuine cross-uid scenario needs root to set up (chown to another user),
-// so it is left to live two-user validation; these cover what can be
-// exercised as the test-runner user.
+// foreignDir returns a directory owned by a uid other than the test runner's.
+// Creating one would need root (chown), but every unix already ships one:
+// /usr is root-owned. Without this the cross-user branch could only be
+// asserted negatively, and a helper that short-circuited before ever calling
+// stat would pass every test.
+func foreignDir(t *testing.T) string {
+	t.Helper()
+
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: no directory is foreign")
+	}
+
+	const dir = "/usr"
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Skipf("cannot stat %s: %v", dir, err)
+	}
+	if !info.IsDir() {
+		t.Skipf("%s is not a directory", dir)
+	}
+
+	return dir
+}
 
 func TestCrossUserOwner(t *testing.T) {
 	t.Run("a self-owned dir is not cross-user", func(t *testing.T) {
@@ -27,8 +47,23 @@ func TestCrossUserOwner(t *testing.T) {
 		}
 	})
 
-	t.Run("EnvNoCrossUser opts out", func(t *testing.T) {
-		dir := t.TempDir()
+	t.Run("a foreign-owned dir is cross-user", func(t *testing.T) {
+		dir := foreignDir(t)
+
+		owner, ok := CrossUserOwner(dir)
+		if !ok {
+			t.Fatalf("CrossUserOwner(%q) = _, false; want the owning user", dir)
+		}
+		if owner == "" {
+			t.Errorf("CrossUserOwner(%q) returned an empty owner", dir)
+		}
+	})
+
+	t.Run("EnvNoCrossUser opts out of a genuinely foreign dir", func(t *testing.T) {
+		// Asserted against a foreign dir, not a self-owned one: against a
+		// self-owned dir the result is false with or without the opt-out, so
+		// the test would pass for a reason unrelated to the opt-out.
+		dir := foreignDir(t)
 		t.Setenv(EnvNoCrossUser, "1")
 
 		if _, ok := CrossUserOwner(dir); ok {
@@ -42,16 +77,23 @@ func TestCrossUserOwner(t *testing.T) {
 // check that would have determined it. If OwnerOf honoured the opt-out too,
 // the diagnostic would be silently unavailable exactly when it is needed.
 func TestOwnerOfIgnoresOptOut(t *testing.T) {
-	dir := t.TempDir()
+	dir := foreignDir(t)
 	t.Setenv(EnvNoCrossUser, "1")
 
-	// Self-owned, so ok is false either way; the point is that OwnerOf does
-	// not short-circuit on the env var before it has looked at the path.
-	if _, ok := OwnerOf(dir); ok {
-		t.Errorf("OwnerOf(%q) reported another owner for a self-owned dir", dir)
+	owner, ok := OwnerOf(dir)
+	if !ok {
+		t.Fatalf("OwnerOf(%q) = _, false with %s set; want the owner regardless of the opt-out", dir, EnvNoCrossUser)
+	}
+	if owner == "" {
+		t.Errorf("OwnerOf(%q) returned an empty owner", dir)
 	}
 
-	missing := filepath.Join(dir, "nope")
+	// Sanity: the opt-out is in force, so the acting-on-it helper still says no.
+	if _, ok := CrossUserOwner(dir); ok {
+		t.Errorf("CrossUserOwner(%q) ignored the %s opt-out", dir, EnvNoCrossUser)
+	}
+
+	missing := filepath.Join(t.TempDir(), "nope")
 	if _, ok := OwnerOf(missing); ok {
 		t.Errorf("OwnerOf(%q) reported an owner for a missing path", missing)
 	}
@@ -89,10 +131,20 @@ func TestReadFileCrossUser(t *testing.T) {
 		}
 	})
 
-	t.Run("no fallback is attempted for a self-owned directory", func(t *testing.T) {
-		// Guards against shelling out to sudo on every ordinary miss.
-		t.Setenv(EnvNoCrossUser, "1")
+	t.Run("no fallback for a self-owned directory", func(t *testing.T) {
+		// No opt-out set here on purpose: the ownership check alone must
+		// keep an ordinary missing-file miss from shelling out to sudo.
 		path := filepath.Join(t.TempDir(), "absent.yaml")
+
+		if _, err := ReadFileCrossUser(path); !os.IsNotExist(err) {
+			t.Errorf("ReadFileCrossUser() error = %v, want a not-exist error", err)
+		}
+	})
+
+	t.Run("the opt-out suppresses the fallback for a foreign directory", func(t *testing.T) {
+		dir := foreignDir(t)
+		t.Setenv(EnvNoCrossUser, "1")
+		path := filepath.Join(dir, "definitely-absent.yaml")
 
 		if _, err := ReadFileCrossUser(path); !os.IsNotExist(err) {
 			t.Errorf("ReadFileCrossUser() error = %v, want a not-exist error", err)

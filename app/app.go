@@ -505,22 +505,45 @@ func (c colimaApp) Version() error {
 // could not actually be established — says so instead.
 //
 // A liveness check across a uid boundary fails rather than returns false
-// (kill(pid, 0) is EPERM), so "not running" and "not determinable" are
-// indistinguishable at the call site. The cross-user re-exec normally closes
-// that gap; when it has been disabled via EnvNoCrossUser and the Lima
-// directory belongs to someone else, the honest answer is that we do not
-// know. Reporting a healthy VM as stopped is the exact failure this fork
-// exists to eliminate — it must not survive behind an opt-out flag.
+// (kill(pid, 0) is EPERM), and limaVM.Running() collapses that error into
+// false — so at this point "stopped" and "could not be determined" are
+// indistinguishable. Whenever the Lima directory belongs to someone else we
+// therefore cannot honestly claim the VM is stopped: either the cross-user
+// re-exec was disabled, or it was attempted and failed (typically a missing
+// NOPASSWD grant, since sudo -n fails closed rather than prompting).
+//
+// Reporting a healthy VM as stopped is the exact failure this fork exists to
+// eliminate. It must not survive behind an opt-out flag, and it must not
+// survive a misconfigured sudoers file either.
 func (c colimaApp) notRunningErr() error {
 	name := config.CurrentProfile().DisplayName
+	limaDir := config.LimaDir()
 
+	owner, foreign := osutil.OwnerOf(limaDir)
+	if !foreign {
+		// The caller owns the directory, so Lima's liveness check was able
+		// to signal the process and "stopped" is a real answer.
+		return fmt.Errorf("%s is not running", name)
+	}
+
+	// The directory belongs to someone else. Note Lima does not error here —
+	// it reports the instance as *Stopped*, which is precisely why this bug
+	// is so easy to believe. The verdict is only trustworthy if the query
+	// actually ran as the owner.
 	if os.Getenv(osutil.EnvNoCrossUser) != "" {
-		if owner, ok := osutil.OwnerOf(config.LimaDir()); ok {
-			return fmt.Errorf(
-				"cannot determine whether %s is running: %s is owned by %q, and %s is set which disables the cross-user check — unset it, or re-run as %q",
-				name, config.LimaDir(), owner, osutil.EnvNoCrossUser, owner,
-			)
-		}
+		return fmt.Errorf(
+			"cannot determine whether %s is running: %s is owned by %q, and %s is set which disables the cross-user check — unset it, or re-run as %q",
+			name, limaDir, owner, osutil.EnvNoCrossUser, owner,
+		)
+	}
+
+	// The re-exec was attempted. If it worked, the verdict stands; if it
+	// failed (sudo -n fails closed on a missing NOPASSWD grant), it does not.
+	if _, err := limautil.Instance(); err != nil {
+		return fmt.Errorf(
+			"cannot determine whether %s is running: %s is owned by %q and the cross-user check failed (%v) — this needs a NOPASSWD sudoers grant to run limactl as %q, or re-run as %q",
+			name, limaDir, owner, err, owner, owner,
+		)
 	}
 
 	return fmt.Errorf("%s is not running", name)
