@@ -3,12 +3,10 @@ package limautil
 import (
 	"os"
 	"os/exec"
-	"os/user"
-	"strconv"
-	"syscall"
 
 	"github.com/abiosoft/colima/cli"
 	"github.com/abiosoft/colima/config"
+	"github.com/abiosoft/colima/util/osutil"
 )
 
 // EnvLimaHome is the environment variable for the Lima directory.
@@ -23,7 +21,12 @@ const LimactlCommand = "limactl"
 // EnvNoCrossUser opts out of the cross-user re-exec fallback below
 // (fork addition, see macports-ports-local#162), even when the Lima
 // instance directory is owned by a user other than the caller.
-const EnvNoCrossUser = "COLIMA_NO_CROSS_USER"
+const EnvNoCrossUser = osutil.EnvNoCrossUser
+
+// crossUserOwner is osutil.CrossUserOwner. It lives in osutil so the
+// config-file read path can share it without importing limautil, which would
+// be an import cycle (limautil imports config/configmanager).
+var crossUserOwner = osutil.CrossUserOwner
 
 // Limactl prepares a limactl command.
 //
@@ -56,35 +59,45 @@ func Limactl(args ...string) *exec.Cmd {
 	return cmd
 }
 
-// crossUserOwner reports the username owning dir when it differs from the
-// caller's effective uid, so Limactl can decide whether to re-exec via
-// sudo. ok is false when: the caller opted out via EnvNoCrossUser; dir
-// does not exist yet (nothing to own cross-user, e.g. first `colima
-// start`); the owning uid cannot be resolved to a username; or dir is
-// already owned by the caller (the common case -- no re-exec needed).
-func crossUserOwner(dir string) (owner string, ok bool) {
-	if os.Getenv(EnvNoCrossUser) != "" {
-		return "", false
+// LimaCommand is the lima guest-shell wrapper (`lima <cmd>` runs <cmd>
+// inside the VM). Distinct from LimactlCommand, which drives the VM from
+// the host.
+const LimaCommand = "lima"
+
+// GuestArgs returns the argv for running `lima <args>` -- a command *inside*
+// the VM -- applying the same cross-user re-exec as Limactl.
+//
+// Fork addition. Limactl covers host-side Lima state (list, liveness), which
+// is why `colima list` works across a uid boundary. Guest execution did not
+// go through it, so anything needing to read from inside the VM still failed
+// cross-user: `colima status` reads the container runtime from
+// /etc/colima/colima.json in the guest, the read failed silently, and status
+// died with "error retrieving current runtime: empty value" on a perfectly
+// healthy VM.
+//
+// env carries the variables the caller would otherwise have set on the child
+// process (LIMA_HOME, LIMA_INSTANCE, COLIMA_BINARY) as KEY=VALUE pairs. They
+// must be re-stated here because sudo resets the environment; the same
+// reasoning as Limactl forwarding LIMA_HOME.
+//
+// Note this elevates guest *command execution*, not just host-side state
+// reads -- a wider grant than Limactl's. It is gated on the same
+// EnvNoCrossUser opt-out and the same NOPASSWD requirement (without the
+// grant, sudo -n fails closed rather than prompting).
+func GuestArgs(env []string, args ...string) []string {
+	owner, crossUser := crossUserOwner(config.LimaDir())
+	return guestArgs(owner, crossUser, env, args...)
+}
+
+// guestArgs is the pure half of GuestArgs, with the ownership decision
+// supplied rather than probed, so both branches are testable without root.
+func guestArgs(owner string, crossUser bool, env []string, args ...string) []string {
+	if !crossUser {
+		return append([]string{LimaCommand}, args...)
 	}
 
-	info, err := os.Stat(dir)
-	if err != nil {
-		return "", false
-	}
-
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return "", false
-	}
-
-	if int(stat.Uid) == os.Geteuid() {
-		return "", false
-	}
-
-	u, err := user.LookupId(strconv.Itoa(int(stat.Uid)))
-	if err != nil {
-		return "", false
-	}
-
-	return u.Username, true
+	argv := []string{"sudo", "-n", "-u", owner, "env"}
+	argv = append(argv, env...)
+	argv = append(argv, LimaCommand)
+	return append(argv, args...)
 }

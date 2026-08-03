@@ -62,6 +62,9 @@ type GuestActions interface {
 	Env(string) (string, error)
 	// Get retrieves a configuration in the VM.
 	Get(key string) string
+	// GetErr is Get with the underlying read error preserved, for callers
+	// that must tell "unset" apart from "could not be read".
+	GetErr(key string) (string, error)
 	// Set sets configuration in the VM.
 	Set(key, value string) error
 	// User returns the username of the user in the VM.

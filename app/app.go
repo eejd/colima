@@ -23,6 +23,7 @@ import (
 	"github.com/abiosoft/colima/environment/vm/lima/limautil"
 	"github.com/abiosoft/colima/store"
 	"github.com/abiosoft/colima/util"
+	"github.com/abiosoft/colima/util/osutil"
 	"github.com/docker/go-units"
 	log "github.com/sirupsen/logrus"
 )
@@ -366,7 +367,7 @@ type statusInfo struct {
 func (c colimaApp) getStatus() (status statusInfo, err error) {
 	ctx := context.Background()
 	if !c.guest.Running(ctx) {
-		return status, fmt.Errorf("%s is not running", config.CurrentProfile().DisplayName)
+		return status, c.notRunningErr()
 	}
 
 	currentRuntime, err := c.currentRuntime(ctx)
@@ -500,12 +501,63 @@ func (c colimaApp) Version() error {
 	return nil
 }
 
-func (c colimaApp) currentRuntime(ctx context.Context) (string, error) {
-	if !c.guest.Running(ctx) {
-		return "", fmt.Errorf("%s is not running", config.CurrentProfile().DisplayName)
+// notRunningErr reports that the VM is not running, or — when that verdict
+// could not actually be established — says so instead.
+//
+// A liveness check across a uid boundary fails rather than returns false
+// (kill(pid, 0) is EPERM), and limaVM.Running() collapses that error into
+// false — so at this point "stopped" and "could not be determined" are
+// indistinguishable. Whenever the Lima directory belongs to someone else we
+// therefore cannot honestly claim the VM is stopped: either the cross-user
+// re-exec was disabled, or it was attempted and failed (typically a missing
+// NOPASSWD grant, since sudo -n fails closed rather than prompting).
+//
+// Reporting a healthy VM as stopped is the exact failure this fork exists to
+// eliminate. It must not survive behind an opt-out flag, and it must not
+// survive a misconfigured sudoers file either.
+func (c colimaApp) notRunningErr() error {
+	name := config.CurrentProfile().DisplayName
+	limaDir := config.LimaDir()
+
+	owner, foreign := osutil.OwnerOf(limaDir)
+	if !foreign {
+		// The caller owns the directory, so Lima's liveness check was able
+		// to signal the process and "stopped" is a real answer.
+		return fmt.Errorf("%s is not running", name)
 	}
 
-	r := c.guest.Get(environment.ContainerRuntimeKey)
+	// The directory belongs to someone else. Note Lima does not error here —
+	// it reports the instance as *Stopped*, which is precisely why this bug
+	// is so easy to believe. The verdict is only trustworthy if the query
+	// actually ran as the owner.
+	if os.Getenv(osutil.EnvNoCrossUser) != "" {
+		return fmt.Errorf(
+			"cannot determine whether %s is running: %s is owned by %q, and %s is set which disables the cross-user check — unset it, or re-run as %q",
+			name, limaDir, owner, osutil.EnvNoCrossUser, owner,
+		)
+	}
+
+	// The re-exec was attempted. If it worked, the verdict stands; if it
+	// failed (sudo -n fails closed on a missing NOPASSWD grant), it does not.
+	if _, err := limautil.Instance(); err != nil {
+		return fmt.Errorf(
+			"cannot determine whether %s is running: %s is owned by %q and the cross-user check failed (%v) — this needs a NOPASSWD sudoers grant to run limactl as %q, or re-run as %q",
+			name, limaDir, owner, err, owner, owner,
+		)
+	}
+
+	return fmt.Errorf("%s is not running", name)
+}
+
+func (c colimaApp) currentRuntime(ctx context.Context) (string, error) {
+	if !c.guest.Running(ctx) {
+		return "", c.notRunningErr()
+	}
+
+	r, err := c.guest.GetErr(environment.ContainerRuntimeKey)
+	if err != nil {
+		return "", fmt.Errorf("error retrieving current runtime: %w", err)
+	}
 	if r == "" {
 		return "", fmt.Errorf("error retrieving current runtime: empty value")
 	}
