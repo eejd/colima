@@ -5,10 +5,11 @@ import (
 	"io"
 
 	"github.com/abiosoft/colima/config"
+	"github.com/abiosoft/colima/environment/vm/lima/limautil"
 )
 
 func (l limaVM) Run(args ...string) error {
-	args = append([]string{lima}, args...)
+	args = limautil.GuestArgs(l.guestEnv, args...)
 
 	a := l.Init(context.Background())
 
@@ -36,7 +37,7 @@ func (l limaVM) SSH(workingDir string, args ...string) error {
 }
 
 func (l limaVM) RunInteractive(args ...string) error {
-	args = append([]string{lima}, args...)
+	args = limautil.GuestArgs(l.guestEnv, args...)
 
 	a := l.Init(context.Background())
 
@@ -48,7 +49,7 @@ func (l limaVM) RunInteractive(args ...string) error {
 }
 
 func (l limaVM) RunWith(stdin io.Reader, stdout io.Writer, args ...string) error {
-	args = append([]string{lima}, args...)
+	args = limautil.GuestArgs(l.guestEnv, args...)
 
 	a := l.Init(context.Background())
 
@@ -60,7 +61,7 @@ func (l limaVM) RunWith(stdin io.Reader, stdout io.Writer, args ...string) error
 }
 
 func (l limaVM) RunOutput(args ...string) (out string, err error) {
-	args = append([]string{lima}, args...)
+	args = limautil.GuestArgs(l.guestEnv, args...)
 
 	a := l.Init(context.Background())
 
@@ -74,7 +75,7 @@ func (l limaVM) RunOutput(args ...string) (out string, err error) {
 }
 
 func (l limaVM) RunQuiet(args ...string) (err error) {
-	args = append([]string{lima}, args...)
+	args = limautil.GuestArgs(l.guestEnv, args...)
 
 	a := l.Init(context.Background())
 

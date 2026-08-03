@@ -39,6 +39,7 @@ func New(host environment.HostActions) environment.VM {
 	return &limaVM{
 		host:         host.WithEnv(envs...),
 		limaHome:     limaHome,
+		guestEnv:     envs,
 		CommandChain: cli.New("vm"),
 		daemon:       daemon.NewManager(host),
 	}
@@ -46,7 +47,6 @@ func New(host environment.HostActions) environment.VM {
 
 const (
 	envLimaInstance = "LIMA_INSTANCE"
-	lima            = "lima"
 	limactl         = limautil.LimactlCommand
 )
 
@@ -64,6 +64,11 @@ type limaVM struct {
 
 	// lima config directory
 	limaHome string
+
+	// guestEnv holds the same KEY=VALUE pairs attached to host via WithEnv.
+	// They are kept separately because a cross-user re-exec goes through
+	// sudo, which resets the environment -- see limautil.GuestArgs.
+	guestEnv []string
 
 	// network between host and the vm
 	daemon daemon.Manager

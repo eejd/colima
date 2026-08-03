@@ -43,6 +43,15 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Commands that only report state must not create a Colima home as a
+		// side effect. A stray ~/.colima minted by `colima status` masks the
+		// real home for every later invocation, so the query breaks the thing
+		// it was asked to report on. See config.SetReadOnly.
+		switch cmd.Name() {
+		case "status", "list", "version", "ssh-config":
+			config.SetReadOnly()
+		}
+
 		// if profile is set via flag, use it
 		// takes precedence over the environment variable and arg
 		if cmd.Flag("profile").Changed {

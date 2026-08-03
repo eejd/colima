@@ -23,6 +23,7 @@ import (
 	"github.com/abiosoft/colima/environment/vm/lima/limautil"
 	"github.com/abiosoft/colima/store"
 	"github.com/abiosoft/colima/util"
+	"github.com/abiosoft/colima/util/osutil"
 	"github.com/docker/go-units"
 	log "github.com/sirupsen/logrus"
 )
@@ -366,7 +367,7 @@ type statusInfo struct {
 func (c colimaApp) getStatus() (status statusInfo, err error) {
 	ctx := context.Background()
 	if !c.guest.Running(ctx) {
-		return status, fmt.Errorf("%s is not running", config.CurrentProfile().DisplayName)
+		return status, c.notRunningErr()
 	}
 
 	currentRuntime, err := c.currentRuntime(ctx)
@@ -500,12 +501,40 @@ func (c colimaApp) Version() error {
 	return nil
 }
 
-func (c colimaApp) currentRuntime(ctx context.Context) (string, error) {
-	if !c.guest.Running(ctx) {
-		return "", fmt.Errorf("%s is not running", config.CurrentProfile().DisplayName)
+// notRunningErr reports that the VM is not running, or — when that verdict
+// could not actually be established — says so instead.
+//
+// A liveness check across a uid boundary fails rather than returns false
+// (kill(pid, 0) is EPERM), so "not running" and "not determinable" are
+// indistinguishable at the call site. The cross-user re-exec normally closes
+// that gap; when it has been disabled via EnvNoCrossUser and the Lima
+// directory belongs to someone else, the honest answer is that we do not
+// know. Reporting a healthy VM as stopped is the exact failure this fork
+// exists to eliminate — it must not survive behind an opt-out flag.
+func (c colimaApp) notRunningErr() error {
+	name := config.CurrentProfile().DisplayName
+
+	if os.Getenv(osutil.EnvNoCrossUser) != "" {
+		if owner, ok := osutil.OwnerOf(config.LimaDir()); ok {
+			return fmt.Errorf(
+				"cannot determine whether %s is running: %s is owned by %q, and %s is set which disables the cross-user check — unset it, or re-run as %q",
+				name, config.LimaDir(), owner, osutil.EnvNoCrossUser, owner,
+			)
+		}
 	}
 
-	r := c.guest.Get(environment.ContainerRuntimeKey)
+	return fmt.Errorf("%s is not running", name)
+}
+
+func (c colimaApp) currentRuntime(ctx context.Context) (string, error) {
+	if !c.guest.Running(ctx) {
+		return "", c.notRunningErr()
+	}
+
+	r, err := c.guest.GetErr(environment.ContainerRuntimeKey)
+	if err != nil {
+		return "", fmt.Errorf("error retrieving current runtime: %w", err)
+	}
 	if r == "" {
 		return "", fmt.Errorf("error retrieving current runtime: empty value")
 	}

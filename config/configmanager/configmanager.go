@@ -8,6 +8,7 @@ import (
 
 	"github.com/abiosoft/colima/config"
 	"github.com/abiosoft/colima/util"
+	"github.com/abiosoft/colima/util/osutil"
 	"github.com/abiosoft/colima/util/yamlutil"
 	"gopkg.in/yaml.v3"
 )
@@ -34,7 +35,13 @@ func SaveToFile(c config.Config, file string) error {
 // LoadFrom loads config from file.
 func LoadFrom(file string) (config.Config, error) {
 	var c config.Config
-	b, err := os.ReadFile(file)
+	// Cross-user read (fork addition). A VM started by a service user has an
+	// instance directory (mode 0700) the caller may not be able to traverse;
+	// without the fallback this read fails, and callers that ignore the error
+	// then report confidently wrong values — `colima status` claimed driver
+	// "QEMU" for a VM actually on macOS Virtualization.Framework, with an
+	// empty mountType, purely because the config was unreadable.
+	b, err := osutil.ReadFileCrossUser(file)
 	if err != nil {
 		return c, fmt.Errorf("could not load config from file: %w", err)
 	}

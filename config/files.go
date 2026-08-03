@@ -11,6 +11,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// defaultHome is an optional compile-time default for the Colima home
+// directory, injected at build time with
+// `-ldflags "-X github.com/abiosoft/colima/config.defaultHome=/some/path"`.
+//
+// It is consulted after COLIMA_HOME and before ~/.colima, and only when the
+// path exists. Packagers deploying Colima with a shared, service-owned home
+// (one VM started by a headless user and queried by interactive users) need
+// every invocation to agree on that home without relying on each caller's
+// environment. Left empty, resolution is exactly upstream's.
+var defaultHome string
+
+// readOnly suppresses directory creation. Commands that only *query* state
+// (status, list, version) must never mint a Colima home as a side effect: a
+// stray, empty ~/.colima created by `colima status` then permanently masks
+// the real home for every later invocation, so the query that was meant to
+// report the VM's state is what breaks reporting it.
+var readOnly bool
+
+// SetReadOnly marks the current invocation as a pure query, so resolving a
+// directory does not create it. Call it before any directory is resolved.
+func SetReadOnly() { readOnly = true }
+
 // requiredDir is a directory that must exist on the filesystem
 type requiredDir struct {
 	once sync.Once
@@ -23,10 +45,8 @@ type requiredDir struct {
 	computedDir *string
 }
 
-// Dir returns the directory path.
-// It ensures the directory is created on the filesystem by calling
-// `mkdir` prior to returning the directory path.
-func (r *requiredDir) Dir() string {
+// Path returns the resolved directory path without creating it.
+func (r *requiredDir) Path() string {
 	if r.computedDir != nil {
 		return *r.computedDir
 	}
@@ -36,23 +56,53 @@ func (r *requiredDir) Dir() string {
 		logrus.Fatal(fmt.Errorf("cannot fetch required directory: %w", err))
 	}
 
-	r.once.Do(func() {
-		if err := fsutil.MkdirAll(dir, 0755); err != nil {
-			logrus.Fatal(fmt.Errorf("cannot make required directory: %w", err))
-		}
-	})
+	return dir
+}
 
-	r.computedDir = &dir
+// Dir returns the directory path.
+// It ensures the directory is created on the filesystem by calling
+// `mkdir` prior to returning the directory path, unless the invocation has
+// been marked read-only via SetReadOnly.
+func (r *requiredDir) Dir() string {
+	if r.computedDir != nil {
+		return *r.computedDir
+	}
+
+	dir := r.Path()
+
+	if !readOnly {
+		r.once.Do(func() {
+			if err := fsutil.MkdirAll(dir, 0755); err != nil {
+				logrus.Fatal(fmt.Errorf("cannot make required directory: %w", err))
+			}
+		})
+
+		r.computedDir = &dir
+	}
+
 	return dir
 }
 
 var (
 	configBaseDir = requiredDir{
 		dir: func() (string, error) {
-			// colima home explicit config
-			dir := os.Getenv("COLIMA_HOME")
-			if _, err := os.Stat(dir); err == nil {
+			// colima home explicit config.
+			//
+			// Honoured unconditionally: upstream required the directory to
+			// already exist, so `COLIMA_HOME=/new/path colima start` silently
+			// fell through to ~/.colima and put the VM somewhere the caller
+			// never asked for. An explicit request is an instruction, not a
+			// hint — if the path is wrong, failing loudly at it beats
+			// succeeding quietly somewhere else.
+			if dir := os.Getenv("COLIMA_HOME"); dir != "" {
 				return dir, nil
+			}
+
+			// compile-time packaging default, when it exists (see defaultHome)
+			if defaultHome != "" {
+				if _, err := os.Stat(defaultHome); err == nil {
+					return defaultHome, nil
+				}
 			}
 
 			// user home directory
@@ -61,7 +111,7 @@ var (
 				return "", err
 			}
 			// colima's config directory based on home directory
-			dir = filepath.Join(homeDir, ".colima")
+			dir := filepath.Join(homeDir, ".colima")
 			// validate existence of colima's config directory
 			_, err = os.Stat(dir)
 
