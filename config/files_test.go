@@ -75,7 +75,7 @@ func TestConfigBaseDirResolution(t *testing.T) {
 	})
 
 	t.Run("defaultHome is used when it exists and COLIMA_HOME is unset", func(t *testing.T) {
-		t.Setenv("COLIMA_HOME", "")
+		unset(t, "COLIMA_HOME")
 		want := t.TempDir()
 		withDefaultHome(t, want)
 
@@ -92,7 +92,7 @@ func TestConfigBaseDirResolution(t *testing.T) {
 		// A packaged default pointing at an unmounted volume must fall back
 		// to the user's home rather than resolving to a path with nothing
 		// behind it.
-		t.Setenv("COLIMA_HOME", "")
+		unset(t, "COLIMA_HOME")
 		absent := filepath.Join(t.TempDir(), "unmounted")
 		withDefaultHome(t, absent)
 
@@ -131,6 +131,13 @@ func TestConfigBaseDirResolution(t *testing.T) {
 		// happened to be. Only reachable when ~/.colima does not exist, which
 		// is why it survived: it needs a clean HOME to show up, exactly what
 		// a build sandbox provides and a developer machine does not.
+		//
+		// HOME is pinned to a fresh temp dir so this discriminates on a
+		// developer machine too: with a real ~/.colima present the earlier
+		// branch returns it (absolute) and the assertion below passes against
+		// the *broken* code as well. Verified — the subtest goes green on the
+		// pre-fix implementation if HOME has a .colima in it.
+		t.Setenv("HOME", t.TempDir())
 		unset(t, "COLIMA_HOME")
 		withDefaultHome(t, "")
 		t.Setenv("XDG_CONFIG_HOME", "")
