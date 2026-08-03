@@ -15,6 +15,20 @@ func withDefaultHome(t *testing.T, path string) {
 	t.Cleanup(func() { defaultHome = prev })
 }
 
+// unset removes an environment variable for one test. t.Setenv registers the
+// restore, then Unsetenv makes it genuinely absent — t.Setenv(k, "") leaves
+// it *set and empty*, which is a different thing to any code using
+// os.LookupEnv, and is precisely what made this test pass on a developer
+// machine while failing in a clean build sandbox.
+func unset(t *testing.T, key string) {
+	t.Helper()
+
+	t.Setenv(key, "")
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+}
+
 // withReadOnly marks the invocation read-only for one test.
 func withReadOnly(t *testing.T, v bool) {
 	t.Helper()
@@ -61,7 +75,7 @@ func TestConfigBaseDirResolution(t *testing.T) {
 	})
 
 	t.Run("defaultHome is used when it exists and COLIMA_HOME is unset", func(t *testing.T) {
-		t.Setenv("COLIMA_HOME", "")
+		unset(t, "COLIMA_HOME")
 		want := t.TempDir()
 		withDefaultHome(t, want)
 
@@ -78,7 +92,7 @@ func TestConfigBaseDirResolution(t *testing.T) {
 		// A packaged default pointing at an unmounted volume must fall back
 		// to the user's home rather than resolving to a path with nothing
 		// behind it.
-		t.Setenv("COLIMA_HOME", "")
+		unset(t, "COLIMA_HOME")
 		absent := filepath.Join(t.TempDir(), "unmounted")
 		withDefaultHome(t, absent)
 
@@ -92,14 +106,14 @@ func TestConfigBaseDirResolution(t *testing.T) {
 	})
 
 	t.Run("an empty defaultHome leaves resolution exactly as upstream", func(t *testing.T) {
-		t.Setenv("COLIMA_HOME", "")
+		unset(t, "COLIMA_HOME")
+		unset(t, "XDG_CONFIG_HOME")
 		withDefaultHome(t, "")
 
 		home, err := os.UserHomeDir()
 		if err != nil {
 			t.Skipf("no user home dir: %v", err)
 		}
-		t.Setenv("XDG_CONFIG_HOME", "")
 
 		got, err := configBaseDir.dir()
 		if err != nil {
@@ -107,6 +121,33 @@ func TestConfigBaseDirResolution(t *testing.T) {
 		}
 		if want := filepath.Join(home, ".colima"); got != want {
 			t.Errorf("configBaseDir.dir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a set-but-empty XDG_CONFIG_HOME counts as unset", func(t *testing.T) {
+		// os.LookupEnv reports an empty value as present, and the xdg branch
+		// then joined it with "colima" and returned the *relative* path
+		// "colima" — a config directory in whatever the working directory
+		// happened to be. Only reachable when ~/.colima does not exist, which
+		// is why it survived: it needs a clean HOME to show up, exactly what
+		// a build sandbox provides and a developer machine does not.
+		//
+		// HOME is pinned to a fresh temp dir so this discriminates on a
+		// developer machine too: with a real ~/.colima present the earlier
+		// branch returns it (absolute) and the assertion below passes against
+		// the *broken* code as well. Verified — the subtest goes green on the
+		// pre-fix implementation if HOME has a .colima in it.
+		t.Setenv("HOME", t.TempDir())
+		unset(t, "COLIMA_HOME")
+		withDefaultHome(t, "")
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		got, err := configBaseDir.dir()
+		if err != nil {
+			t.Fatalf("configBaseDir.dir() error = %v", err)
+		}
+		if !filepath.IsAbs(got) {
+			t.Errorf("configBaseDir.dir() = %q, want an absolute path", got)
 		}
 	})
 }

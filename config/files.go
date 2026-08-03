@@ -116,7 +116,14 @@ var (
 			_, err = os.Stat(dir)
 
 			// extra xdg config directory
-			xdgDir, xdg := os.LookupEnv("XDG_CONFIG_HOME")
+			//
+			// Set-but-empty counts as unset. os.LookupEnv reports XDG_CONFIG_HOME=""
+			// as present, and the branch below then resolves the home to the
+			// *relative* path "colima" — a config directory in whatever the
+			// working directory happens to be. The XDG base-directory spec is
+			// explicit that an empty value must be treated as unset.
+			xdgDir := os.Getenv("XDG_CONFIG_HOME")
+			xdg := xdgDir != ""
 
 			if err == nil {
 				// ~/.colima is found but xdg dir is set
